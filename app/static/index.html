@@ -36,9 +36,16 @@
                      @click="triggerFileInput"
                      @dragover.prevent="handleDragOver"
                      @dragleave.prevent="handleDragLeave"
-                     @drop.prevent="handleDrop">
-                    <p>点击或拖拽文件到此处上传</p>
-                    <p style="font-size: 0.875rem;">支持 PDF、TXT、DOC、DOCX 等格式</p>
+                     @drop.prevent="handleDrop"
+                     :class="{ 'is-uploading': isUploading }">
+                    <div v-if="isUploading" class="upload-loading">
+                        <div class="loading-spinner"></div>
+                        <p>正在处理文件...</p>
+                    </div>
+                    <div v-else>
+                        <p>点击或拖拽文件到此处上传</p>
+                        <p style="font-size: 0.875rem;">支持 PDF、TXT、DOC、DOCX 等格式</p>
+                    </div>
                     <input type="file" 
                            ref="fileInput"
                            multiple 
@@ -83,6 +90,11 @@
     <script type="module">
         const { createApp, ref, onMounted, nextTick } = Vue;
 
+        // Configure axios defaults
+        axios.defaults.headers.common['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+        axios.defaults.headers.common['Pragma'] = 'no-cache';
+        axios.defaults.headers.common['Expires'] = '0';
+
         const app = createApp({
             setup() {
                 const API_BASE_URL = '/api/v1';
@@ -91,6 +103,7 @@
                 const currentMessage = ref('');
                 const chatHistory = ref([]);
                 const isLoading = ref(false);
+                const isUploading = ref(false);
                 const files = ref([]);
                 const errorMessage = ref({
                     show: false,
@@ -128,13 +141,32 @@
                     isLoading.value = true;
 
                     try {
-                        const response = await axios.post(`${API_BASE_URL}/query`, {
-                            question: message
-                        });
+                        // 添加一个空的bot消息
+                        const botMessageIndex = chatHistory.value.length;
                         chatHistory.value.push({
-                            content: response.data.answer,
+                            content: '',
                             isUser: false
                         });
+
+                        const response = await fetch(`${API_BASE_URL}/query`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({ question: message })
+                        });
+
+                        const reader = response.body.getReader();
+                        const decoder = new TextDecoder();
+
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done) break;
+                            
+                            const chunk = decoder.decode(value);
+                            chatHistory.value[botMessageIndex].content += chunk;
+                            await scrollToBottom();
+                        }
                     } catch (error) {
                         chatHistory.value.push({
                             content: '抱歉，发生了错误：' + error.message,
@@ -150,6 +182,7 @@
                     try {
                         const response = await axios.get(`${API_BASE_URL}/files`);
                         files.value = response.data.files;
+                        
                     } catch (error) {
                         showError('加载文件列表失败: ' + error.message, true);
                     }
@@ -159,6 +192,7 @@
                     const files = event.target.files;
                     if (files.length === 0) return;
 
+                    isUploading.value = true;
                     const formData = new FormData();
                     for (let file of files) {
                         formData.append('files', file);
@@ -170,6 +204,8 @@
                         await loadFileList();
                     } catch (error) {
                         showError('上传失败: ' + error.message, true);
+                    } finally {
+                        isUploading.value = false;
                     }
                 };
 
@@ -250,6 +286,7 @@
                     currentMessage,
                     chatHistory,
                     isLoading,
+                    isUploading,
                     files,
                     errorMessage,
                     sendMessage,
@@ -544,6 +581,27 @@
 
         ::-webkit-scrollbar-thumb:hover {
             background: var(--text-primary);
+        }
+
+        .upload-area.is-uploading {
+            pointer-events: none;
+            opacity: 0.7;
+        }
+
+        .upload-loading {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .loading-spinner {
+            width: 2rem;
+            height: 2rem;
+            border: 3px solid var(--border-color);
+            border-top-color: var(--primary-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
         }
     </style>
 </body>

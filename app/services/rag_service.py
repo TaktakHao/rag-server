@@ -1,7 +1,8 @@
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Any
 import logging
 from operator import itemgetter
+from collections import deque
 
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -22,7 +23,7 @@ from ..config import settings
 logger = logging.getLogger(__name__)
 
 class RAGService:
-    def __init__(self):
+    def __init__(self, max_history: int = 10):
         # 初始化大语言模型
         self.llm = ChatDeepSeek(
             model="deepseek-reasoner",
@@ -48,15 +49,20 @@ class RAGService:
             search_kwargs={"k": settings.MAX_RETRIEVAL_DOCS}
         )
         
+        # 初始化对话历史记录
+        self.conversation_history = deque(maxlen=max_history)
+        
         # 设置提示模板
         self.prompt = PromptTemplate.from_template(
-            """你是一个严谨的RAG助手。
+            """你是一个风趣幽默的RAG助手，可以间接的回答问题，
             请优先根据以下提供的上下文信息来回答问题，
-            如果上下文信息不足以回答问题，
-            就再根据问题自行思考回答。
-            如果问题使用了上下文的信息，请在回答后输出使用了哪些上下文。
+            如果上下文信息不足以回答问题，就抛弃上下文信息，
+            根据问题自行思考回答，回答要幽默风趣。
             
-            问题：{question}
+            历史对话：
+            {chat_history}
+            
+            当前问题：{question}
             上下文信息：{context}
             --------------------------------
             回答：
@@ -65,7 +71,10 @@ class RAGService:
         
         # 构建处理链
         self.chain = (
-            {"question": RunnablePassthrough()} 
+            {
+                "question": RunnablePassthrough(),
+                "chat_history": lambda _: self._format_chat_history()
+            }
             | RunnablePassthrough.assign(
                 context=itemgetter("question") | self.retriever
             ) 
@@ -73,6 +82,16 @@ class RAGService:
             | self.llm 
             | StrOutputParser()
         )
+    
+    def _format_chat_history(self) -> str:
+        """格式化对话历史记录"""
+        if not self.conversation_history:
+            return "无历史对话"
+        
+        formatted_history = []
+        for q, a in self.conversation_history:
+            formatted_history.append(f"问：{q}\n答：{a}\n")
+        return "\n".join(formatted_history)
     
     def _get_loader(self, file_path: Path):
         """根据文件类型选择合适的加载器"""
@@ -111,14 +130,35 @@ class RAGService:
             logger.error(f"添加文档时出错: {str(e)}")
             return False
     
-    async def query(self, question: str) -> str:
+    async def query(self, question: str):
         """查询RAG系统"""
         try:
-            result = self.chain.invoke(question)
-            return result
+            # 获取上下文
+            context = self.retriever.get_relevant_documents(question)
+            # 格式化对话历史
+            chat_history = self._format_chat_history()
+            
+            # 构建提示
+            prompt = self.prompt.format(
+                question=question,
+                context=context,
+                chat_history=chat_history
+            )
+            
+            # 使用流式输出
+            async for chunk in self.llm.astream(prompt):
+                if chunk.content:
+                    yield chunk.content
+                    
+            # 将当前问答添加到历史记录
+            self.conversation_history.append((question, "".join(chunk.content)))
         except Exception as e:
             logger.error(f"查询RAG系统时出错: {str(e)}")
-            return f"处理您的问题时出错: {str(e)}"
+            yield f"处理您的问题时出错: {str(e)}"
+    
+    def clear_history(self) -> None:
+        """清空对话历史记录"""
+        self.conversation_history.clear()
     
     async def clear_database(self) -> bool:
         """清空向量数据库和知识库文件"""
@@ -131,7 +171,7 @@ class RAGService:
             )
             
             # 删除知识库文件
-            knowledge_base_dir = Path(settings.DATA_DIR) / "knowledge_base"
+            knowledge_base_dir = Path(settings.KNOWLEDGE_BASE_DIR)
             if knowledge_base_dir.exists():
                 for file_path in knowledge_base_dir.glob("*"):
                     try:
@@ -139,6 +179,20 @@ class RAGService:
                         logger.info(f"已删除知识库文件: {file_path}")
                     except Exception as e:
                         logger.error(f"删除文件 {file_path} 时出错: {str(e)}")
+            
+            # 删除向量数据库目录下的所有文件和文件夹
+            vector_db_dir = Path(settings.VECTOR_DB_DIR)
+            if vector_db_dir.exists():
+                for file_path in vector_db_dir.glob("*"):
+                    try:
+                        if file_path.is_file():
+                            file_path.unlink()
+                            logger.info(f"已删除向量数据库文件: {file_path}")
+                    except Exception as e:
+                        logger.error(f"删除向量数据库文件 {file_path} 时出错: {str(e)}")
+            
+            # 清空对话历史记录
+            self.clear_history()
             
             return True
         except Exception as e:

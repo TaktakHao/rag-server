@@ -6,10 +6,13 @@ class Settings(BaseSettings):
     # API设置
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "Enterprise RAG API"
+
+    # 设置 tokenizers 并行处理
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
     
     # 模型设置
     DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
-    EMBEDDING_MODEL_PATH: str = "Your Embedding Model Path"
+    EMBEDDING_MODEL_PATH: str = "/Users/makeblock/py/model_dir/BAAI/bge-large-zh-v1___5"
     
     # 向量数据库设置
     VECTOR_DB_DIR: Path = Path("./data/vector_db")

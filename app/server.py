@@ -1,5 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import logging
@@ -73,8 +73,10 @@ async def upload_files(files: List[UploadFile] = File(...)):
 async def query(request: QueryRequest):
     """查询RAG系统"""
     try:
-        result = await rag_service.query(request.question)
-        return {"answer": result}
+        return StreamingResponse(
+            rag_service.query(request.question),
+            media_type="text/event-stream"
+        )
     except Exception as e:
         logger.error(f"Error processing query: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -114,7 +116,7 @@ async def list_files():
         # 按修改时间排序，最新的在前面
         files.sort(key=lambda x: x["modified"], reverse=True)
         
-        return {"files": [f["name"] for f in files]}
+        return {"files": files}
     except Exception as e:
         logger.error(f"Error listing files: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
